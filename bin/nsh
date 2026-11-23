@@ -2,7 +2,7 @@
 
 if [[ ${1:-} == --help ]]; then
     printf '%s\n' 'usage: nsh [-c LINE [NAME [ARG ...]]]' \
-        'Run Bash first and hand a nonzero result to law.' \
+        'In a terminal, run Bash first and hand a nonzero result to yhwh.' \
         'Use @ to run prose explicitly and Readline to edit or recall a line.' \
         'Type :paste for multiple lines, ld.so COMMAND for plain Bash, or exit to leave.' \
         'Set NO_COLOR=1 to disable shell colors.'
@@ -13,25 +13,29 @@ if (($#)) && [[ "$1" != -c || $# -lt 2 ]]; then
     exit 2
 fi
 
-if [[ -z ${NSH_PROGRAM:-} ]]; then
-    NSH_PROGRAM=$(command -v @) || {
-        printf 'nsh: put @ on PATH\n' >&2
-        exit 127
-    }
+if (($#)) || [[ ! -t 0 || ! -t 2 ]]; then
+    exec bash "$@"
 fi
-NSH_PROGRAM=$(realpath -- "$NSH_PROGRAM") || exit
+
+if [[ ${YHWH_LOGIN:-0} == 1 ]]; then
+    [[ ! -r /etc/profile ]] || source /etc/profile
+    [[ ! -r "$HOME/.profile" ]] || source "$HOME/.profile"
+elif [[ -r /lib/ix/bashrc ]]; then
+    source /lib/ix/bashrc
+fi
 NSH_HOME=$(realpath -m -- "${NSH_HOME:-$HOME/.nsh}") || exit
-export NSH_PROGRAM NSH_HOME
+export NSH_HOME
 (umask 077; mkdir -p -- "$NSH_HOME"/{etc,bin,lib}) || exit
-PATH="$NSH_HOME/bin:$PATH"
+PATH="$HOME/bin:$NSH_HOME/bin:$PATH"
 export PATH
 
 nsh_tmp=$(mktemp -d) || exit
-trap 'rm -f -- "$nsh_tmp"/{stderr,context,reply,backend,input}; rmdir -- "$nsh_tmp"' EXIT
+trap 'rm -f -- "$nsh_tmp"/{stderr,context,reply,input}; rmdir -- "$nsh_tmp"' EXIT
 shopt -s expand_aliases
 nsh_history=()
 nsh_status=0
 nsh_question=
+nsh_questions=0
 nsh_failure=
 nsh_failure_status=0
 nsh_bash=
@@ -70,7 +74,7 @@ nsh_message() {
 }
 
 nsh_reply() {
-    local backend backend_path backend_status reply
+    local backend_status reply
     {
         printf 'New Human Shell turn\nDirectory: %q\nNSH_HOME: %q\n' "$PWD" "$NSH_HOME"
         if [[ -n "$nsh_question" ]]; then
@@ -83,81 +87,59 @@ nsh_reply() {
             tail -c 32768 -- "$NSH_HOME/etc/nshrc"
             printf '\n'
         fi
-        if [[ -s "$NSH_HOME/history" ]]; then
-            printf 'Saved shell history (last 16 commands, up to 16384 bytes):\n'
-            (
-                history -c
-                history -r "$NSH_HOME/history"
-                HISTTIMEFORMAT=
-                history 16
-            ) | tail -c 16384
-        fi
         printf 'Recent turns, oldest first:\n'
         printf '%s\n' "${nsh_history[@]}"
     } > "$nsh_tmp/context"
-    for backend in law lawd lord lorde lordhavemercy lordylordydaddysforty; do
-        backend_path=$(type -P "$backend") || {
-            nsh_message "$nsh_error_style" "nsh: $backend is missing from PATH"
-            return 127
-        }
-        NSH_TURN=1 "$backend_path" @@ -- "$nsh_line" \
-            < "$nsh_tmp/context" > "$nsh_tmp/reply" 2> "$nsh_tmp/backend"
-        backend_status=$?
-        if ((nsh_interrupted || backend_status == 130)); then
-            nsh_question=
-            return 130
-        fi
-        if ((backend_status)); then
-            cat -- "$nsh_tmp/backend" >&2
-            return "$backend_status"
-        fi
-
-        reply=$(<"$nsh_tmp/reply")
-        case "$reply" in
-            '@more') continue ;;
-            $'@ask\n'?*)
-                nsh_question=${reply#*$'\n'}
-                nsh_answer=$nsh_question
-                nsh_message "$nsh_question_style" "$nsh_question"
-                return 2
-                ;;
-            $'@fail\n'?*)
-                nsh_question=
-                nsh_answer=${reply#*$'\n'}
-                nsh_message "$nsh_error_style" "$nsh_answer"
-                return "$nsh_failure_status"
-                ;;
-        esac
+    yhwh turn "$nsh_line" < "$nsh_tmp/context" > "$nsh_tmp/reply"
+    backend_status=$?
+    if ((nsh_interrupted || backend_status == 130)); then
         nsh_question=
-        nsh_answer=$reply
-        cat -- "$nsh_tmp/reply"
-        nsh_load_bash || return
-        hash -r
-        return 0
-    done
+        return 130
+    fi
+    if ((backend_status)); then
+        nsh_question=
+        return "$nsh_failure_status"
+    fi
+
+    reply=$(<"$nsh_tmp/reply")
+    case "$reply" in
+        $'@ask\n'?*)
+            if ((nsh_questions >= 20)); then
+                nsh_question=
+                nsh_message "$nsh_error_style" 'yhwh: twenty questions. Take it from the top.'
+                return "$nsh_failure_status"
+            fi
+            ((nsh_questions++))
+            nsh_question=${reply#*$'\n'}
+            nsh_answer=$nsh_question
+            nsh_message "$nsh_question_style" "$nsh_question"
+            return 2
+            ;;
+        $'@fail\n'?*)
+            nsh_question=
+            nsh_answer=${reply#*$'\n'}
+            nsh_message "$nsh_error_style" "$nsh_answer"
+            return "$nsh_failure_status"
+            ;;
+    esac
     nsh_question=
-    nsh_message "$nsh_error_style" 'nsh: all reasoning runners asked for more effort'
-    return "$nsh_failure_status"
+    nsh_answer=$reply
+    cat -- "$nsh_tmp/reply"
+    nsh_load_bash || return
+    hash -r
 }
 
 nsh_restore_status() { return "$1"; }
-
-nsh_ld_command() {
-    local name=$1 path
-    path=$(type -P -- "$name") || return 1
-    [[ -r "$path" && -x "$path" ]] || return 1
-    IFS= read -r first_line < "$path" || return 1
-    [[ "$first_line" == '#!/usr/bin/env LD' ]] || return 1
-    # Treat a bare LD-shebang command like running that program directly.
-    NSH_PROGRAM=$path LD "$path" -- "$name"
-}
 
 nsh_turn() {
     local nsh_directory=$PWD entry
     nsh_result='not run'
     nsh_answer=
     nsh_diagnostic=
-    if [[ "$nsh_line" =~ ^[[:blank:]]*ld\.so([[:blank:]]|$) ]]; then
+    if [[ "$nsh_line" == :cancel ]]; then
+        nsh_question=
+        nsh_status=0
+    elif [[ "$nsh_line" =~ ^[[:blank:]]*ld\.so([[:blank:]]|$) ]]; then
         nsh_restore_status "$nsh_status"
         eval -- "$nsh_line"
         nsh_status=$?
@@ -165,9 +147,6 @@ nsh_turn() {
     elif [[ -n "$nsh_question" ]]; then
         nsh_reply
         nsh_status=$?
-    elif [[ "$nsh_line" =~ ^[[:blank:]]*([[:alnum:]_][[:alnum:]_.+-]*)[[:blank:]]*$ ]] && nsh_ld_command "${BASH_REMATCH[1]}"; then
-        nsh_status=0
-        nsh_result='LD program'
     else
         nsh_restore_status "$nsh_status"
         eval -- "$nsh_line" 2> "$nsh_tmp/stderr"
@@ -177,6 +156,7 @@ nsh_turn() {
             cat -- "$nsh_tmp/stderr" >&2
         fi
         if ((nsh_status && !nsh_interrupted)); then
+            nsh_questions=0
             nsh_failure_status=$nsh_status
             printf -v nsh_failure 'Input: %s\nStarting directory: %q\nBash result: %s' \
                 "$nsh_line" "$nsh_directory" "$nsh_result"
@@ -245,17 +225,6 @@ nsh_set_prompt() {
 }
 
 nsh_load_bash || exit
-if [[ ${1:-} == -c ]]; then
-    nsh_line=$2
-    shift 2
-    if (($#)); then
-        BASH_ARGV0=$1
-        shift
-    fi
-    nsh_turn "$@"
-    exit "$nsh_status"
-fi
-
 if [[ -t 0 ]]; then
     nsh_terminal=1
     nsh_readline=-e
