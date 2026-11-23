@@ -185,8 +185,8 @@ nsh_turn() {
         entry+=$'\n'"Agent: ${nsh_answer:0:4096}"
     fi
     nsh_history+=( "$entry" )
-    if ((${#nsh_history[@]} > 16)); then
-        nsh_history=( "${nsh_history[@]: -16}" )
+    if ((${#nsh_history[@]} > 24)); then
+        nsh_history=( "${nsh_history[@]: -24}" )
     fi
 }
 
