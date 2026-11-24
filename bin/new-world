@@ -234,11 +234,13 @@ if [ "$nw_mode" = l ] && { [ "$#" -ne 0 ] || [ -n "$nw_operation" ]; }; then
     nw_fail 'use --link NAME FILE'
 fi
 
+if [ "$nw_name" = @ ] && [ "$#" -eq 0 ] && [ -z "$nw_operation" ] &&
+    { [ ! -t 0 ] || [ ! -t 1 ]; }; then
+    printf '%s\n' 'α | Ω'
+    exit
+fi
+
 if [ "$#" -gt 0 ] || [ -n "$nw_operation" ] || [ ! -t 0 ]; then
-    if [ "$nw_name" = @ ] && [ "$#" -eq 0 ] && [ -z "$nw_operation" ]; then
-        printf '%s\n' 'α | Ω'
-        exit
-    fi
     if [ "$nw_strictness" = 2 ]; then
         case $nw_language in
             nsh) if [ -n "$nw_operation" ]; then set -- "$nw_operation" "$@"; fi
