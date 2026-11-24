@@ -38,7 +38,7 @@ $text
 EOF_LINE
         case $verb in ''|'#'*) exit 0 ;; esac
         [ -r "$SHN_HOME/etc/aliases" ] || break
-        expansion=$(awk -F '\t' -v nw_name="$verb" '$1 == name { sub(/^[^\t]*\t/, ""); value=$0 } END { print value }' "$SHN_HOME/etc/aliases")
+        expansion=$(awk -F '\t' -v alias_name="$verb" '$1 == alias_name { sub(/^[^\t]*\t/, ""); value=$0 } END { print value }' "$SHN_HOME/etc/aliases")
         [ -n "$expansion" ] || break
         hops=$((hops + 1))
         [ "$hops" -le 16 ] || { speech_diagnostic "alias cycle at $verb"; exit 65; }
