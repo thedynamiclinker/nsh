@@ -8,6 +8,8 @@ import sys
 import tempfile
 import traceback
 
+EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+
 
 def check(path):
     try:
@@ -26,7 +28,7 @@ class Nahas(code.InteractiveConsole):
         self.flags = [
             ("mode", "NW_MODE", "r", "c a r l"),
             ("nitpick", "NW_NITPICK", "1", "0 1 2"),
-            ("effort", "LORD_EFFORT", "medium", "none low medium high xhigh max"),
+            ("effort", "LORD_EFFORT", "2", "0 1 2 3 4 5"),
             ("permission", "LORD_PERMISSION", "text", "text read write"),
         ]
         self.settings = {name: os.environ.get(env, default) for name, env, default, _ in self.flags}
@@ -70,13 +72,16 @@ class Nahas(code.InteractiveConsole):
             sys.stderr.write(question)
         elif marker == b"@fail" and newline:
             sys.stderr.buffer.write(rest)
-        elif marker == b"@code" and self.settings["mode"] == "c":
+        elif marker == b"@code" and self.settings["mode"] in ("c", "a"):
             try:
-                compile(rest, "<correction>", "exec")
+                source = rest.decode()
+                if not source.strip():
+                    raise ValueError("Empty correction.")
+                compile(source, "<correction>", "exec")
             except (SyntaxError, ValueError) as exc:
                 print(exc, file=sys.stderr)
             else:
-                self.correction = rest.decode()
+                self.correction = source
                 sys.stdout.write(self.correction)
                 print("Use :run to execute this correction or :link NAME to save it.", file=sys.stderr)
         elif self.settings["mode"] in ("c", "a"):
@@ -84,6 +89,11 @@ class Nahas(code.InteractiveConsole):
         else:
             sys.stdout.buffer.write(finished.stdout)
             sys.stdout.flush()
+
+    def answer(self, line):
+        self.pending = False
+        self.context += f"\nUser answer:\n{line}\n"
+        self.ask_agent()
 
     def control(self, line):
         command, _, value = line.partition(" ")
@@ -93,11 +103,24 @@ class Nahas(code.InteractiveConsole):
             self.pending = False
             self.correction = ""
             return
+        if line in ("up", "dn"):
+            change = 1 if line == "up" else -1
+            effort = int(self.settings["effort"]) + change
+            self.settings["effort"] = str(min(5, max(0, effort)))
+            return
+        if line in ("c", "a", "r", "l"):
+            command, value = ":mode", line
+        if command == ":effort" and value in EFFORTS:
+            value = str(EFFORTS.index(value))
         for name, _, _, choices in self.flags:
             if command == f":{name}" and value in choices.split():
                 self.settings[name] = value
-                self.pending = False
+                if name in ("mode", "nitpick"):
+                    self.pending = False
                 return
+        if command == ":answer" and self.pending:
+            self.answer(value)
+            return
         if command == ":run" and self.correction:
             source, self.correction = self.correction, ""
             self.runcode(compile(source, "<correction>", "exec"))
@@ -146,13 +169,11 @@ class Nahas(code.InteractiveConsole):
                     source = "\n".join(buffer)
                     buffer.clear()
                     more = self.runsource(source, symbol="exec")
-                elif not buffer and line.startswith(":"):
+                elif not buffer and (line.startswith(":") or line in ("up", "dn", "c", "a", "r", "l")):
                     self.control(line)
                     continue
                 elif self.pending:
-                    self.pending = False
-                    self.context += f"\nUser answer:\n{line}\n"
-                    self.ask_agent()
+                    self.answer(line)
                     continue
                 else:
                     buffer.append(line)

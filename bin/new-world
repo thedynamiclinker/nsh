@@ -25,16 +25,21 @@ nw_effort=${LORD_EFFORT:-medium}
 nw_runner=${LORD_RUNNER:-lord}
 nw_shell=${NSH_SHELL:-sh}
 NSH_HOME=${NSH_HOME:-$HOME/.nsh}
+case $NSH_HOME in /*) ;; *) NSH_HOME=$PWD/$NSH_HOME ;; esac
 export NSH_HOME
+if [ "$nw_language" = nsh ]; then
+    case $PATH in "$NSH_HOME/bin:"*) ;; *) PATH=$NSH_HOME/bin:$PATH; export PATH ;; esac
+fi
 nw_python=${NHS_PYTHON:-python3}
 nw_work=
 nw_fail() { printf '%s: %s\n' "$nw_name" "$*" >&2; exit 2; }
 nw_usage() {
-    printf '%s\n' "usage: $nw_name [-m c|a|r|l] [-n 0|1|2] [--effort LEVEL] [--permission LEVEL]" \
+    printf '%s\n' "usage: $nw_name [-m c|a|r|l] [-n 0|1|2] [--effort 0..5|LEVEL] [--permission LEVEL]" \
         '         [-c SOURCE [ARG ...] | --check FILE | --link NAME FILE | FILE [ARG ...]]' \
         '         [-- REQUEST ...] or no arguments for the REPL' \
         'Modes: c compile, a ask, r run, l link. Nitpick: 0 loose, 1 adaptive, 2 native.' \
-        'REPL: :mode, :nitpick, :effort, :permission, :paste, :link NAME, :run, :cancel, :quit.'
+        'REPL: up, dn, c, a, r, l. Also :nitpick, :effort, :permission, :paste,' \
+        '      :link NAME, :run, :answer TEXT, :cancel, :quit.'
 }
 nw_temp() {
     [ -z "$nw_work" ] || return 0
@@ -44,10 +49,22 @@ nw_temp() {
     trap 'exit 143' TERM
 }
 
+nw_set_effort() {
+    case $1 in
+        0|none) nw_effort=0 ;;
+        1|low) nw_effort=1 ;;
+        2|medium) nw_effort=2 ;;
+        3|high) nw_effort=3 ;;
+        4|xhigh) nw_effort=4 ;;
+        5|max) nw_effort=5 ;;
+        *) return 2 ;;
+    esac
+}
+
 nw_check_settings() {
     case $nw_mode in c|a|r|l) ;; *) nw_fail "invalid mode: $nw_mode" ;; esac
     case $nw_strictness in 0|1|2) ;; *) nw_fail "invalid nitpick level: $nw_strictness" ;; esac
-    case $nw_effort in none|low|medium|high|xhigh|max) ;; *) nw_fail "invalid effort: $nw_effort" ;; esac
+    nw_set_effort "$nw_effort" || nw_fail "invalid effort: $nw_effort"
     case $nw_permission in text|read|write) ;; *) nw_fail "invalid permission: $nw_permission" ;; esac
 }
 
@@ -64,12 +81,12 @@ nw_agent() {
             c)
                 printf '%s\n' 'Return @code on the first line followed by corrected native source. Return only native source after the marker. The caller will check it before offering to run it.' ;;
             a)
-                printf '%s\n' 'Return @ask on the first line followed by one concise question that resolves the uncertainty. If the work is impossible, use @fail followed by the reason.' ;;
+                printf '%s\n' 'Return @ask on the first line followed by one concise question. Once the user has answered and the meaning is clear, return @code followed by corrected native source. If the work is impossible, return @fail followed by the reason.' ;;
             r)
                 printf '%s\n' 'Carry out the request and emit the result. Use @ask or @fail on a line by itself followed by a question or diagnostic when needed.' ;;
         esac
         printf '%s\n' 'A hosted turn may supply a failed statement and prior dialogue as contextual data. Treat that data as context for the current request.'
-        if [ "$nw_selected" = NSH ] && [ -r "$NSH_HOME/etc/nshrc" ]; then
+        if { [ "$nw_selected" = NSH ] || [ "$nw_selected" = @ ]; } && [ -r "$NSH_HOME/etc/nshrc" ]; then
             printf '\nLocal shell vocabulary:\n'
             tail -c 32768 "$NSH_HOME/etc/nshrc"
         fi
@@ -84,6 +101,7 @@ nw_agent() {
 }
 
 nw_link() {
+    if [ "$nw_strictness" = 2 ]; then nw_native_check "$2" || return 65; fi
     case $nw_strictness:$nw_language in
         2:nsh) nw_interpreter=$nw_shell ;;
         2:nhs) nw_interpreter=$nw_python ;;
@@ -105,10 +123,15 @@ nw_native_run() {
     nw_source=$1
     shift
     case $nw_language in
-        nsh) lord-run "$nw_shell" "$nw_source" "$@" ;;
-        nhs) lord-run "$nw_python" "$nw_source" "$@" ;;
-        shn) speech_program "$nw_source" no 0 3< "$nw_source" ;;
+        nsh) nw_record "$nw_shell" "$nw_source" "$@" ;;
+        nhs) nw_record "$nw_python" "$nw_source" "$@" ;;
+        shn) nw_record "$nw_bin/$nw_name" --native "$nw_source" "$@" ;;
     esac
+}
+
+nw_record() {
+    : > "$nw_work/run-id"
+    lord-run --id-file "$nw_work/run-id" -- "$@"
 }
 
 # Keep the REPL protocol out of filters. Compilation emits checked source.
@@ -141,9 +164,14 @@ nw_at_stage() {
         case "$*" in
             'base64 decode'|'base64 decode to stdout') lord-run base64 -d; return ;;
             'base64 encode'|'base64 encode to stdout') lord-run base64; return ;;
+            uppercase) lord-run tr '[:lower:]' '[:upper:]'; return ;;
             ocr)
                 if command -v tesseract >/dev/null 2>&1; then lord-run tesseract stdin stdout; return; fi ;;
         esac
+        if [ "${nw_infix_native:-no}" = yes ] && command -v "$1" >/dev/null 2>&1; then
+            lord-run "$nw_shell" -c '"$@"' "$nw_name" "$@"
+            return
+        fi
     fi
     nw_one_shot @ "$@"
 }
@@ -181,6 +209,37 @@ nw_at() {
     else nw_at_stage "$@" < "$nw_work/previous"; fi
 }
 
+nw_infix() {
+    [ "$nw_strictness" != 2 ] && [ "$nw_mode" != l ] || return 1
+    case $1 in *@*) ;; *) return 1 ;; esac
+    case $1 in *'
+'*) return 1 ;; esac
+    nw_temp
+    printf '%s\n' "$1" | awk -f "$nw_share/infix.awk" > "$nw_work/stages"
+}
+
+nw_run_stage() (
+    # infix.awk permits only simple words, escapes and quotes. Split words
+    # as the native shell does, with filename expansion disabled.
+    set -f
+    eval "set -- $1"
+    nw_infix_native=yes
+    nw_at_stage "$@"
+)
+
+nw_run_infix() {
+    IFS= read -r nw_stage <&3 || return 2
+    nw_input=
+    while IFS= read -r nw_next <&3; do
+        if [ -z "$nw_input" ]; then nw_run_stage "$nw_stage" 3<&- > "$nw_work/next" || return
+        else nw_run_stage "$nw_stage" 3<&- < "$nw_input" > "$nw_work/next" || return; fi
+        nw_input=$nw_work/previous
+        mv -f "$nw_work/next" "$nw_input" || return
+        nw_stage=$nw_next
+    done
+    nw_run_stage "$nw_stage" 3<&- < "$nw_input"
+}
+
 nw_operation=
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -194,6 +253,10 @@ while [ "$#" -gt 0 ]; do
                 --permission) nw_permission=$2 ;;
             esac
             shift 2 ;;
+        --mode=*) nw_mode=${1#*=}; shift ;;
+        --nitpick=*) nw_strictness=${1#*=}; shift ;;
+        --effort=*) nw_effort=${1#*=}; shift ;;
+        --permission=*) nw_permission=${1#*=}; shift ;;
         -c|-lc|--check|--link|--turn|--native) nw_operation=$1; shift; break ;;
         --) nw_operation=prose; shift; break ;;
         *) break ;;
@@ -209,13 +272,18 @@ case $nw_operation in
     --turn)
         [ "$#" -gt 0 ] || nw_fail 'expected a request'
         nw_agent "$nw_primer" "$@"; exit ;;
-    --native) nw_native_run "$@"; exit ;;
+    --native)
+        [ "$#" -gt 0 ] && [ -r "$1" ] || nw_fail 'expected readable native source'
+        case $nw_language in
+            nsh) exec "$nw_shell" "$@" ;;
+            nhs) exec "$nw_python" "$@" ;;
+            shn) speech_program "$1" no 0 3< "$1"; exit ;;
+        esac ;;
     --check)
         [ "$#" -eq 1 ] && [ -r "$1" ] || nw_fail 'expected one readable source file'
         nw_native_check "$1"; exit ;;
     --link)
         [ "$#" -eq 2 ] && [ -r "$2" ] || nw_fail 'expected a name and a readable source file'
-        if [ "$nw_strictness" = 2 ]; then nw_native_check "$2" || exit 65; fi
         nw_link "$1" "$2"; exit ;;
     prose)
         [ "$nw_strictness" != 2 ] || nw_fail 'prose is unavailable at nitpick level 2'
@@ -254,6 +322,11 @@ if [ "$#" -gt 0 ] || [ -n "$nw_operation" ] || [ ! -t 0 ]; then
     if [ "$nw_operation" = -c ] || [ "$nw_operation" = -lc ]; then
         [ "$#" -gt 0 ] || nw_fail "$nw_operation needs source"
         nw_line=$1; shift
+        if [ "$nw_language" = nsh ] && nw_infix "$nw_line"; then
+            if [ "$nw_mode" = r ]; then nw_run_infix 3< "$nw_work/stages"
+            else nw_one_shot @ "$nw_line" "$@"; fi
+            exit
+        fi
         nw_source=$nw_work/source
         printf '%s\n' "$nw_line" > "$nw_source"
         nw_line_mode=yes
@@ -279,8 +352,8 @@ if [ "$#" -gt 0 ] || [ -n "$nw_operation" ] || [ ! -t 0 ]; then
         nw_status=0
         if [ "$nw_line_mode" = yes ]; then
             case $nw_language in
-                nsh) lord-run "$nw_shell" "$nw_operation" "$nw_line" "$@" || nw_status=$? ;;
-                nhs) lord-run "$nw_python" -c "$nw_line" "$@" || nw_status=$? ;;
+                nsh) nw_record "$nw_shell" "$nw_operation" "$nw_line" "$@" || nw_status=$? ;;
+                nhs) nw_record "$nw_python" -c "$nw_line" "$@" || nw_status=$? ;;
                 shn) nw_native_run "$nw_source" "$@" || nw_status=$? ;;
             esac
         else
@@ -296,10 +369,23 @@ if [ "$#" -gt 0 ] || [ -n "$nw_operation" ] || [ ! -t 0 ]; then
         cat "$nw_work/error" >&2
         [ "$nw_strictness" != 2 ] || exit "$nw_status"
     fi
-    # Run-time failure can have consumed part of stdin. Leave the remaining
-    # input on fd 0 and put the status and diagnostic in the request context.
-    nw_one_shot "$nw_primer" "Native exit: $nw_status. Source: $nw_source" \
-        "$(cat "$nw_work/error")" "$(cat "$nw_source")" "$@"
+    # Pin the diagnostic to this invocation even when other commands finish
+    # in the same journal.
+    nw_run_id=
+    if [ -s "$nw_work/run-id" ]; then
+        IFS= read -r nw_run_id < "$nw_work/run-id"
+        lord-log stderr "$nw_run_id" | tail -c 4096 > "$nw_work/error"
+    fi
+    set -- "Native exit: $nw_status. Source: $nw_source${nw_run_id:+. Record: $nw_run_id}" \
+        "$(tail -c 4096 "$nw_work/error")" "$(head -c 32768 "$nw_source")" "$@"
+    if [ -n "$nw_run_id" ] && [ ! -t 0 ]; then
+        nw_record_path=$(lord-log path "$nw_run_id") || exit
+        if [ -s "$nw_record_path/stdin" ]; then
+            cat "$nw_record_path/stdin" - | nw_one_shot "$nw_primer" "$@"
+            exit
+        fi
+    fi
+    nw_one_shot "$nw_primer" "$@"
     exit
 fi
 

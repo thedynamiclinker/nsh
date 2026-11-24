@@ -13,27 +13,30 @@ With a terminal and no arguments, each command opens a REPL. Use
 native source. `--link NAME FILE` installs source with a shebang into
 `LD_BINDIR` or `~/.local/bin`.
 
-The prompt shows mode, nitpick level, effort, and permission. Change them
-with `:mode`, `:nitpick`, `:effort`, or `:permission`, or the matching flags.
+The prompt shows mode, nitpick level, effort (0–5), and permission.
+Type `up` or `dn` to change effort and `c`, `a`, `r`, or `l` to change
+mode. The longer controls are `:mode`, `:nitpick`, `:effort`, and
+`:permission`. Use the matching flags for a single invocation.
 
 | Mode | Behavior on a failed native statement |
 | --- | --- |
 | `c` | Request a correction and validate it. `:run` runs the correction. |
-| `a` | Request a question and keep the answer with the original statement. |
+| `a` | Ask for meaning, then propose validated source when it is clear. |
 | `r` | Send the request to the backend with the selected permission. |
 | `l` | Keep the source available to install with `:link NAME`. |
 
 Runtime is the default mode. Compile and ask use text permission. Failed
-commands can still produce effects and consume part of stdin before
-fallback receives control.
+commands can produce effects before fallback receives control. On a pipe
+or file, fallback receives recorded stdin followed by any remaining input.
 
 Nitpick level `2` is native only. Level `1` allows semantic fallback on
 syntax or vocabulary errors, including shell exit status 126 or 127.
 Level `0` also allows fallback on runtime failure. Lowercase commands
 start at level `1`, uppercase dialects at level `0`.
 
-Use `:paste` for a block ending in a blank line and `:cancel` to discard
-a pending question or correction. The shell REPL keeps working directory,
+Use `:paste` for a block ending in a blank line. Use `:answer TEXT` if a
+reply matches a REPL control. `:cancel` discards a pending question or
+correction. The shell REPL keeps working directory,
 variables, and functions. `ld.so COMMAND` gives a native turn the terminal
 streams. Nahas uses a persistent Python namespace when Python is installed.
 
@@ -47,7 +50,8 @@ base64 < image.png | @ base64 decode to stdout @ ocr
 
 A standalone `@` argument separates stages. Each completed stage supplies
 its bytes to the next. `@ -- REQUEST` keeps `@` literal in one request.
-Base64 stages use native utilities. OCR uses Tesseract when available and
+NSH also accepts `cat 'my file' @ sed 's/old/new/'` in the REPL and with
+`-c`. Base64 stages use native utilities. OCR uses Tesseract when available and
 otherwise needs a backend that accepts the image through stdin.
 
 ## Local vocabulary

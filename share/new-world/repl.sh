@@ -1,18 +1,28 @@
 # The shell evaluates its own builtins here so cd, functions, aliases, and
 # variables have the usual lifetime. Python has its own persistent namespace.
+nw_load_shell_rc() {
+    nw_rc=$NSH_HOME/etc/nsh.bash
+    nw_rc_current=
+    if [ -r "$nw_rc" ]; then
+        nw_rc_current=$(cat "$nw_rc") || return
+        if [ "$nw_rc_current" != "${nw_rc_loaded:-}" ]; then
+            "$nw_shell" -n "$nw_rc" && . "$nw_rc" || return
+        fi
+    fi
+    nw_rc_loaded=$nw_rc_current
+}
+
 case $nw_language in
     nsh)
         nw_config=$NSH_HOME
-        if [ -r "$nw_config/etc/nsh.bash" ]; then . "$nw_config/etc/nsh.bash"; fi
+        if [ -n "${BASH_VERSION:-}" ]; then shopt -s expand_aliases; fi
+        nw_load_shell_rc || exit
         ;;
     shn) nw_config=$SHN_HOME ;;
     nhs) nw_config=${NHS_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/nhs} ;;
 esac
-if [ -d "$nw_config/bin" ]; then PATH=$nw_config/bin:$PATH; export PATH; fi
-
 nw_history=$nw_config/history
 if [ -n "${BASH_VERSION:-}" ]; then
-    shopt -s expand_aliases
     if [ -r "$nw_history" ]; then builtin history -r "$nw_history"; fi
 fi
 nw_native_status=0
@@ -31,9 +41,7 @@ nw_remember() {
 }
 
 nw_reply() {
-    if ! nw_agent "$nw_primer" "$1" < "$nw_work/context" > "$nw_work/reply"; then
-        return 1
-    fi
+    nw_agent "$nw_turn_primer" "$nw_original" < "$nw_work/context" > "$nw_work/reply" || return
     IFS= read -r nw_marker < "$nw_work/reply"
     case $nw_marker in
         @ask)
@@ -43,7 +51,7 @@ nw_reply() {
             sed '1d' "$nw_work/reply" >> "$nw_work/context"
             return 0 ;;
         @code)
-            [ "$nw_mode" = c ] || { cat "$nw_work/reply"; return; }
+            case $nw_mode in c|a) ;; *) cat "$nw_work/reply"; return ;; esac
             sed '1d' "$nw_work/reply" > "$nw_work/correction"
             if [ -s "$nw_work/correction" ] && nw_native_check "$nw_work/correction"; then
                 nw_compiled=yes
@@ -61,7 +69,10 @@ nw_reply() {
                 printf '%s\n' 'The backend did not follow the turn protocol.' >&2
                 return 2
             fi
-            cat "$nw_work/reply" ;;
+            cat "$nw_work/reply" || return
+            if [ "$nw_language" = nsh ] && [ "$nw_permission" = write ]; then
+                nw_load_shell_rc && hash -r
+            fi ;;
     esac
 }
 
@@ -71,7 +82,7 @@ nw_run_native() {
     nw_native_status=0
     nw_source_invalid=no
     printf '%s\n' "$1" > "$nw_work/source"
-    if nw_native_check "$nw_work/source" "$((nw_source_line - 1))" "<repl>" 2> "$nw_work/error"; then
+    if nw_native_check "$nw_work/source" "$nw_source_offset" "<repl>" 2> "$nw_work/error"; then
         case $nw_language in
             nsh)
                 nw_restore_status "$nw_native_status_before"
@@ -79,7 +90,7 @@ nw_run_native() {
                 nw_native_status=$? ;;
             *)
                 case $nw_language in
-                    shn) speech_program '<repl>' no "$((nw_source_line - 1))" 3< "$nw_work/source" 2> "$nw_work/error" ;;
+                    shn) speech_program '<repl>' no "$nw_source_offset" 3< "$nw_work/source" 2> "$nw_work/error" ;;
                     *) nw_native_run "$nw_work/source" 2> "$nw_work/error" ;;
                 esac
                 nw_native_status=$? ;;
@@ -89,6 +100,15 @@ nw_run_native() {
         nw_native_status=65
     fi
     cat "$nw_work/error" >&2
+}
+
+nw_count_source() {
+    nw_source_offset=$nw_source_line
+    case $1 in
+        *'
+'*) nw_source_line=$((nw_source_line + $(printf '%s\n' "$1" | wc -l))) ;;
+        *) nw_source_line=$((nw_source_line + 1)) ;;
+    esac
 }
 
 while :; do
@@ -129,18 +149,39 @@ while :; do
     case $nw_line in
         :quit|:exit) exit "$nw_native_status" ;;
         :cancel) nw_pending= nw_compiled=; nw_native_status=0; continue ;;
-        :mode\ *)
+        c|a|r|l|:mode\ *)
             nw_choice=${nw_line#* }
-            case $nw_choice in c|a|r|l) nw_mode=$nw_choice; nw_pending=; continue ;; esac ;;
+            case $nw_choice in
+                c|a|r|l) nw_mode=$nw_choice; nw_pending= ;;
+                *) printf '%s\n' 'Use c, a, r, or l for the mode.' >&2 ;;
+            esac
+            continue ;;
+        up)
+            if [ "$nw_effort" -lt 5 ]; then nw_effort=$((nw_effort + 1)); fi
+            continue ;;
+        dn)
+            if [ "$nw_effort" -gt 0 ]; then nw_effort=$((nw_effort - 1)); fi
+            continue ;;
         :nitpick\ *)
             nw_choice=${nw_line#* }
-            case $nw_choice in 0|1|2) nw_strictness=$nw_choice; nw_pending=; continue ;; esac ;;
+            case $nw_choice in
+                0|1|2) nw_strictness=$nw_choice; nw_pending= ;;
+                *) printf '%s\n' 'Use a nitpick level from 0 to 2.' >&2 ;;
+            esac
+            continue ;;
         :effort\ *)
-            nw_choice=${nw_line#* }
-            case $nw_choice in none|low|medium|high|xhigh|max) nw_effort=$nw_choice; continue ;; esac ;;
+            nw_set_effort "${nw_line#* }" || printf '%s\n' 'Use an effort level from 0 to 5.' >&2
+            continue ;;
         :permission\ *)
             nw_choice=${nw_line#* }
-            case $nw_choice in text|read|write) nw_permission=$nw_choice; continue ;; esac ;;
+            case $nw_choice in
+                text|read|write) nw_permission=$nw_choice ;;
+                *) printf '%s\n' 'Use text, read, or write for permission.' >&2 ;;
+            esac
+            continue ;;
+        :answer\ *)
+            if [ -z "$nw_pending" ]; then printf '%s\n' 'There is no pending question.' >&2; continue; fi
+            nw_line=${nw_line#* } ;;
         :link\ *)
             if [ -n "$nw_compiled" ]; then nw_target=$nw_work/correction
             elif [ -n "$nw_last" ]; then nw_target=$nw_work/last
@@ -150,8 +191,9 @@ while :; do
             continue ;;
         :run)
             if [ -n "$nw_compiled" ]; then
-                nw_source_line=$((nw_source_line + 1))
-                nw_run_native "$(cat "$nw_work/correction")"
+                nw_line=$(cat "$nw_work/correction")
+                nw_count_source "$nw_line"
+                nw_run_native "$nw_line"
                 if [ "$nw_native_status" -eq 0 ]; then cp "$nw_work/correction" "$nw_work/last"; nw_last=yes; fi
                 nw_compiled=
             else
@@ -179,26 +221,40 @@ while :; do
     if [ -n "$nw_pending" ]; then
         nw_pending=
         printf 'User answer:\n%s\n' "$nw_line" >> "$nw_work/context"
-        nw_reply "$nw_original"
+        nw_reply
         nw_native_status=$?
         continue
     fi
 
-    nw_source_line=$((nw_source_line + 1))
+    nw_count_source "$nw_line"
     nw_compiled=
     nw_last=yes
     printf '%s\n' "$nw_line" > "$nw_work/last"
+    nw_original=$nw_line
+    nw_turn_primer=$nw_primer
+    if [ "$nw_language" = nsh ] && nw_infix "$nw_line"; then
+        if [ "$nw_mode" = r ]; then
+            nw_run_infix 3< "$nw_work/stages"
+            nw_native_status=$?
+            continue
+        fi
+        nw_turn_primer=@
+        printf 'Directory: %s\nSource line: %s\nNative result: not run (semantic stages)\n' \
+            "$PWD" "$((nw_source_offset + 1))" > "$nw_work/context"
+        nw_reply
+        nw_native_status=$?
+        continue
+    fi
     nw_run_native "$nw_line"
     if [ -n "$nw_interrupted" ]; then nw_native_status=130; continue; fi
     if [ "$nw_native_status" -eq 0 ] || [ "$nw_strictness" = 2 ] || [ "$nw_mode" = l ]; then continue; fi
     if [ "$nw_strictness" = 1 ] && [ "$nw_source_invalid" = no ]; then
         case "$nw_language:$nw_native_status" in nsh:126|nsh:127) ;; *) continue ;; esac
     fi
-    nw_original=$nw_line
     {
-        printf 'Directory: %s\nSource line: %s\nNative status: %s\nDiagnostic:\n' "$PWD" "$nw_source_line" "$nw_native_status"
+        printf 'Directory: %s\nSource line: %s\nNative status: %s\nDiagnostic:\n' "$PWD" "$((nw_source_offset + 1))" "$nw_native_status"
         tail -c 4096 "$nw_work/error"
     } > "$nw_work/context"
-    nw_reply "$nw_original"
+    nw_reply
     nw_native_status=$?
 done
