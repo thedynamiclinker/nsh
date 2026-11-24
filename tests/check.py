@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -49,7 +50,10 @@ class Terminal:
         return before
 
     def enter(self, line):
-        os.write(self.fd, (line + "\n").encode())
+        self.send((line + "\n").encode())
+
+    def send(self, keys):
+        os.write(self.fd, keys)
 
     def quit(self):
         self.enter(":quit")
@@ -177,6 +181,76 @@ esac
             term.quit()
         assert run(str(Path(environment["LD_BINDIR"], f"linked-{name}"))).stdout == b"corrected\n"
 
+    provider = directory / "provider-cli"
+    provider.write_text('''#!/bin/sh
+set -eu
+case "$*" in
+    'login --device-auth')
+        test -t 0 && test -t 1 && test -t 2
+        printf 'Provider is waiting for input\\n' >&2
+        IFS= read -r answer
+        test "$answer" = continue ;;
+    'login status') echo 'fixture signed in' ;;
+    'auth login --fail') exit 17 ;;
+    'auth login --help') echo 'fixture help' ;;
+    'exec '*) echo 'codex selected' ;;
+    '--print '*) echo 'claude selected' ;;
+    *) exit 43 ;;
+esac
+''')
+    provider.chmod(0o700)
+    environment.update(LORD_CODEX=str(provider), LORD_CLAUDE=str(provider))
+    selection = Path(environment["XDG_CONFIG_HOME"], "lord/provider")
+    assert run("lord", "auth", "login", "claude", "--help").stdout == b"fixture help\n"
+    assert not selection.exists()
+
+    if shutil.which("bash") is None:
+        return
+    readline_env = dict(environment, TERM="xterm-256color", INPUTRC=str(directory / "inputrc"))
+    readline_env.pop("NSH_SHELL")
+    readline_env.pop("NO_COLOR", None)
+    (directory / "inputrc").touch()
+    (directory / "completion-file").touch()
+    prompt = "nsh[r:1:2:text]"
+    with Terminal(["nsh"], directory, readline_env) as term:
+        term.expect("\x1b[1;33mTHE NEW WORLD")
+        term.expect(prompt)
+        term.enter("echo remember-this-line")
+        assert b"\rremember-this-line\r\n" in term.expect(prompt)
+        term.send(b"\x1b[A\n")
+        assert b"\rremember-this-line\r\n" in term.expect(prompt)
+        term.send(b"echo completion-fi\t\n")
+        assert b"\rcompletion-file\r\n" in term.expect(prompt)
+        term.enter(":paste")
+        term.expect("... ")
+        term.enter("echo abandoned")
+        term.expect("... ")
+        term.send(b"\x03")
+        term.expect("[130]> ")
+        term.enter("lord auth login codex --device-auth")
+        term.expect("Provider is waiting for input")
+        term.enter("continue")
+        term.expect(prompt)
+        term.enter(":help")
+        term.expect("REPL: up, dn")
+        term.expect(prompt)
+        term.quit()
+
+    assert selection.read_text() == "codex\n"
+    assert run("lord", "auth", "status").stdout == b"fixture signed in\n"
+    run("lord", "auth", "login", "claude", "--fail", status=17)
+    assert selection.read_text() == "codex\n"
+    assert "lord auth" not in Path(environment["NSH_HOME"], "history").read_text()
+    del environment["LORD_BACKEND"]
+    assert run("lord", "fixture request").stdout == b"codex selected\n"
+
+    with Terminal(["nsh"], directory, dict(readline_env, NO_COLOR="1")) as term:
+        assert b"\x1b[1;33m" not in term.expect(prompt)
+        term.send(b"\x12remember-this\r")
+        term.expect("\rremember-this-line\r\n")
+        term.expect(prompt)
+        term.quit()
+
 
 with TemporaryDirectory(prefix="new-world-") as temporary:
     directory = Path(temporary)
@@ -184,11 +258,12 @@ with TemporaryDirectory(prefix="new-world-") as temporary:
     environment = dict(os.environ)
     for name, path in {
         "HOME": "home", "NSH_HOME": "shell", "NHS_HOME": "nahas", "SHN_HOME": "speech",
-        "LD_BINDIR": "linked", "LORD_LOG_DIR": "log",
+        "LD_BINDIR": "linked", "LORD_LOG_DIR": "log", "XDG_CONFIG_HOME": "config",
     }.items():
         environment[name] = str(directory / path)
     environment.update(LORD_RECORD="1", LORD_EFFORT="2", LORD_PERMISSION="text", LORD_RUNNER="lord",
-                       NW_MODE="r", NW_NITPICK="1", NSH_SHELL="sh", NHS_PYTHON=sys.executable)
+                       NW_MODE="r", NW_NITPICK="1", NSH_SHELL="sh", NHS_PYTHON=sys.executable,
+                       TERM="dumb")
     Path(environment["HOME"]).mkdir()
     subprocess.run([sys.argv[1], "-s", "install", f"PREFIX={prefix}", "DESTDIR="], env=environment, check=True)
     check(prefix, directory, environment)

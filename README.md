@@ -13,10 +13,19 @@ With a terminal and no arguments, each command opens a REPL. Use
 native source. `--link NAME FILE` installs source with a shebang into
 `LD_BINDIR` or `~/.local/bin`.
 
-The prompt shows mode, nitpick level, effort (0–5), and permission.
+The prompt shows mode, nitpick level, effort (0–5), and permission. The
+shell adds the working directory and displays a failed turn's exit status.
+Type `:help` for the controls or set `NO_COLOR=1` for a plain prompt.
 Type `up` or `dn` to change effort and `c`, `a`, `r`, or `l` to change
 mode. The longer controls are `:mode`, `:nitpick`, `:effort`, and
 `:permission`. Use the matching flags for a single invocation.
+
+The shell REPL starts with Bash when available. Set `NSH_SHELL` to choose
+your shell. With Bash, use Up and Down to recall commands, Ctrl+R to search
+`$NSH_HOME/history`, and Tab to complete paths. Bash 5.3 and later also
+complete shell commands. Readline uses your `~/.inputrc`. A line starting
+with a space stays out of history. Try `lord auth login` inside the REPL
+to start the provider's interactive sign-in.
 
 | Mode | Behavior on a failed native statement |
 | --- | --- |

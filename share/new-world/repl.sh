@@ -22,8 +22,27 @@ case $nw_language in
     nhs) nw_config=${NHS_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/nhs} ;;
 esac
 nw_history=$nw_config/history
+nw_readline=
 if [ -n "${BASH_VERSION:-}" ]; then
+    nw_readline=-e
+    if [ "${BASH_VERSINFO[0]}" -gt 5 ] ||
+        { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -ge 3 ]; }; then
+        nw_readline=-E
+    fi
     if [ -r "$nw_history" ]; then builtin history -r "$nw_history"; fi
+fi
+nw_color=no
+if [ -t 2 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
+    nw_color=yes
+fi
+if [ "$nw_language" = nsh ] && [ -t 2 ] && [ "${TERM:-dumb}" != dumb ]; then
+    if [ "$nw_color" = yes ]; then printf '\033[1;33mTHE NEW WORLD\033[0m  ·  ' >&2
+    else printf 'THE NEW WORLD  ·  ' >&2; fi
+    if [ -n "$nw_readline" ]; then
+        printf '%s\n' ':help  ·  Tab completes  ·  Ctrl+R searches' >&2
+    else
+        printf '%s\n' ':help lists REPL commands' >&2
+    fi
 fi
 nw_native_status=0
 nw_source_line=0
@@ -31,6 +50,32 @@ nw_pending=
 nw_compiled=
 nw_last=
 trap 'nw_interrupted=yes' INT
+
+nw_read_line() {
+    nw_interrupted=
+    # Give Readline its own process so Ctrl+C can discard input without
+    # losing the working directory, definitions, or history in the REPL.
+    (
+        trap 'exit 130' INT
+        nw_line=
+        nw_status=0
+        if [ -n "$nw_readline" ]; then
+            IFS= read "$nw_readline" -r -p "$1" nw_line || nw_status=$?
+        else
+            printf '%s' "$1" >&2
+            IFS= read -r nw_line || nw_status=$?
+        fi
+        printf '%s' "$nw_line" > "$nw_work/line"
+        exit "$nw_status"
+    )
+    nw_read_status=$?
+    if [ "$nw_read_status" -eq 130 ] || [ -n "$nw_interrupted" ]; then
+        nw_line=
+        return 130
+    fi
+    nw_line=$(cat "$nw_work/line")
+    [ "$nw_read_status" -eq 0 ] || [ -n "$nw_line" ]
+}
 
 nw_remember() {
     case $1 in
@@ -117,36 +162,37 @@ while :; do
     nw_prompt="$nw_name[$nw_mode:$nw_strictness:$nw_effort:$nw_shown_permission]"
     if [ "$nw_language" = shn ]; then nw_prompt="$nw_prompt $((nw_source_line + 1))"; fi
     if [ -n "$nw_pending" ]; then nw_prompt="$nw_prompt?"; fi
-    nw_interrupted=
-    PS1="$nw_prompt> "
-    # Readline can consume Ctrl+C before a noninteractive shell gets its
-    # trap. Give the reader its own process and keep the REPL state here.
-    (
-        trap 'exit 130' INT
-        nw_line=
-        nw_read_status=0
-        if [ -n "${BASH_VERSION:-}" ]; then
-            IFS= read -e -r -p "$PS1" nw_line || nw_read_status=$?
-        else
-            printf '%s' "$PS1" >&2
-            IFS= read -r nw_line || nw_read_status=$?
+    if [ "$nw_language" = nsh ]; then
+        nw_directory=$PWD
+        case $nw_directory in
+            "$HOME") nw_directory='~' ;;
+            "$HOME"/*) nw_directory="~/${nw_directory#"$HOME"/}" ;;
+        esac
+        if [ -n "$nw_readline" ]; then
+            case $nw_directory in *[[:cntrl:]]*) nw_directory=$(printf '%q' "$nw_directory") ;; esac
         fi
-        printf '%s' "$nw_line" > "$nw_work/line"
-        exit "$nw_read_status"
-    )
-    nw_read_status=$?
-    if [ "$nw_read_status" -eq 130 ] || [ -n "$nw_interrupted" ]; then
-        nw_pending= nw_compiled= nw_native_status=130
-        printf '\n' >&2
-        continue
+        nw_status_label=
+        if [ "$nw_native_status" -ne 0 ]; then nw_status_label=" [$nw_native_status]"; fi
+        if [ "$nw_color" = yes ] && [ -n "$nw_readline" ]; then
+            PS1=$(printf '\001\033[1;33m\002%s\001\033[0;36m\002 %s\001\033[0m\002%s> ' \
+                "$nw_prompt" "$nw_directory" "$nw_status_label")
+        else
+            PS1="$nw_prompt $nw_directory$nw_status_label> "
+        fi
+    else
+        PS1="$nw_prompt> "
     fi
-    nw_line=$(cat "$nw_work/line")
-    if [ "$nw_read_status" -ne 0 ] && [ -z "$nw_line" ]; then
+    if nw_read_line "$PS1"; then :
+    else
+        nw_read_status=$?
         printf '\n' >&2
-        exit "$nw_native_status"
+        if [ "$nw_read_status" -ne 130 ]; then exit "$nw_native_status"; fi
+        nw_pending= nw_compiled= nw_native_status=130
+        continue
     fi
 
     case $nw_line in
+        :help) nw_usage; continue ;;
         :quit|:exit) exit "$nw_native_status" ;;
         :cancel) nw_pending= nw_compiled=; nw_native_status=0; continue ;;
         c|a|r|l|:mode\ *)
@@ -201,10 +247,25 @@ while :; do
             fi
             continue ;;
         :paste)
-            nw_line=
-            while IFS= read -r nw_part && [ -n "$nw_part" ]; do nw_line=${nw_line:+$nw_line
-}$nw_part; done
+            nw_paste=
+            while nw_read_line '... ' && [ -n "$nw_line" ]; do
+                nw_paste=${nw_paste:+$nw_paste
+}$nw_line
+            done
+            if [ "$nw_read_status" -eq 130 ] || [ -n "$nw_interrupted" ]; then
+                nw_pending= nw_compiled= nw_native_status=130
+                printf '\n' >&2
+                continue
+            fi
+            nw_line=$nw_paste
             ;;
+        lord\ auth\ login|lord\ auth\ login\ *|lord\ auth\ status|lord\ auth\ status\ *)
+            if [ "$nw_language" = nsh ]; then
+                nw_count_source "$nw_line"
+                (nw_restore_status "$nw_native_status"; eval "$nw_line")
+                nw_native_status=$?
+                continue
+            fi ;;
         ld.so\ *)
             if [ "$nw_language" = nsh ]; then
                 nw_source_line=$((nw_source_line + 1))

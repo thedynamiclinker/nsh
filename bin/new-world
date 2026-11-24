@@ -39,7 +39,8 @@ nw_usage() {
         '         [-- REQUEST ...] or no arguments for the REPL' \
         'Modes: c compile, a ask, r run, l link. Nitpick: 0 loose, 1 adaptive, 2 native.' \
         'REPL: up, dn, c, a, r, l. Also :nitpick, :effort, :permission, :paste,' \
-        '      :link NAME, :run, :answer TEXT, :cancel, :quit.'
+        '      :link NAME, :run, :answer TEXT, :cancel, :help, :quit.' \
+        'Shell REPL: lord auth login signs in to the provider in this terminal.'
 }
 nw_temp() {
     [ -z "$nw_work" ] || return 0
@@ -389,9 +390,13 @@ if [ "$#" -gt 0 ] || [ -n "$nw_operation" ] || [ ! -t 0 ]; then
     exit
 fi
 
-if [ "$nw_language" = nsh ] && [ "$nw_shell" != sh ] && [ "${NW_IN_SHELL:-0}" != 1 ]; then
-    NW_IN_SHELL=1 NW_MODE=$nw_mode NW_NITPICK=$nw_strictness LORD_PERMISSION=$nw_permission LORD_EFFORT=$nw_effort \
-        exec "$nw_shell" "$0"
+if [ "$nw_language" = nsh ]; then
+    if [ -z "${NSH_SHELL:-}" ]; then nw_shell=$(command -v bash) || nw_shell=sh; fi
+    if [ "$nw_shell" != sh ] && [ "${NW_IN_SHELL:-0}" != 1 ]; then
+        NW_IN_SHELL=1 NW_MODE=$nw_mode NW_NITPICK=$nw_strictness LORD_PERMISSION=$nw_permission LORD_EFFORT=$nw_effort \
+            exec "$nw_shell" "$0"
+    fi
+    unset NW_IN_SHELL
 fi
 
 nw_temp
